@@ -1,2 +1,0 @@
-print("Jornada de dados")
-
