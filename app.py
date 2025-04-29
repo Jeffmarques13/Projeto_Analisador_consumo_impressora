@@ -3,8 +3,9 @@ import pandas as pd
 import plotly.express as px
 from io import BytesIO
 import openpyxl
-from io import BytesIO
+from fpdf import FPDF
 
+# Função para processar os dados do Excel
 @st.cache_data
 def processar_excel(arquivo):
     df = pd.read_excel(arquivo)
@@ -34,33 +35,17 @@ def processar_excel(arquivo):
 
     return consumo_setor, df
 
+# Função para criar o Excel com dados separados
 @st.cache_data
-def to_excel(df, grafico_geral, grafico_aumento, grafico_reducao):
+def to_excel(comparativo):
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Comparativo')
-
-        # Salvar gráficos como imagens no Excel
-        workbook = writer.book
-        worksheet = workbook.create_sheet('Gráficos')
-
-        # Salvar gráfico geral
-        img_geral = grafico_geral.to_image(format='png')
-        img_geral_path = BytesIO(img_geral)
-        worksheet.insert_image('A1', 'Grafico_Geral.png', {'image_data': img_geral_path})
-
-        # Salvar gráfico de aumento
-        img_aumento = grafico_aumento.to_image(format='png')
-        img_aumento_path = BytesIO(img_aumento)
-        worksheet.insert_image('A30', 'Grafico_Aumento.png', {'image_data': img_aumento_path})
-
-        # Salvar gráfico de redução
-        img_reducao = grafico_reducao.to_image(format='png')
-        img_reducao_path = BytesIO(img_reducao)
-        worksheet.insert_image('A60', 'Grafico_Reducao.png', {'image_data': img_reducao_path})
-
+        comparativo.to_excel(writer, index=False, sheet_name='Comparativo')
+        comparativo[comparativo['Diferença'] > 0].to_excel(writer, index=False, sheet_name='Consumo Aumentado')
+        comparativo[comparativo['Diferença'] < 0].to_excel(writer, index=False, sheet_name='Consumo Diminuido')
     return output.getvalue()
 
+# Função para criar KPI
 def criar_kpi(titulo, valor, cor):
     st.markdown(f"""
         <div style="background-color:{cor}; padding:15px; border-radius:12px; text-align:center; box-shadow: 2px 2px 5px rgba(0,0,0,0.2);">
@@ -69,15 +54,35 @@ def criar_kpi(titulo, valor, cor):
         </div>
     """, unsafe_allow_html=True)
 
+# Função para gerar PDF
+def gerar_pdf(comparativo):
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    pdf.cell(200, 10, txt="Relatório de Consumo de Impressoras", ln=True, align="C")
+    pdf.ln(10)
+
+    for index, row in comparativo.iterrows():
+        pdf.cell(200, 10, txt=f"Setor: {row['Setor']} | Consumo Anterior: {row['Consumo Anterior']} | Consumo Atual: {row['Consumo Atual']} | Diferença: {row['Diferença']} | Variação: {row['Porcentagem Variação']}", ln=True)
+
+    # Gera o PDF em memória
+    pdf_output = pdf.output(dest='S').encode('latin1')  # Utilizando .encode() para converter para bytes
+
+    return pdf_output  # Retorna os dados binários do PDF para o download
+
+# Configuração da página do Streamlit
 st.set_page_config(page_title="Analisador de Consumo", layout="wide")
 st.title('📈 Dashboard de Consumo de Impressoras')
 
+# Upload dos arquivos
 st.write('**1. Anexe o arquivo do mês anterior:**')
 arquivo_mes_anterior = st.file_uploader('Mês Anterior', type=['xlsx'], key='mes_anterior')
 
 st.write('**2. Anexe o arquivo do mês atual:**')
 arquivo_mes_atual = st.file_uploader('Mês Atual', type=['xlsx'], key='mes_atual')
 
+# Quando os dois arquivos forem carregados, processar os dados
 if arquivo_mes_anterior and arquivo_mes_atual:
     consumo_anterior, dados_mes_anterior = processar_excel(arquivo_mes_anterior)
     consumo_atual, dados_mes_atual = processar_excel(arquivo_mes_atual)
@@ -92,14 +97,15 @@ if arquivo_mes_anterior and arquivo_mes_atual:
 
         comparativo = pd.merge(consumo_anterior, consumo_atual, on='Setor', how='outer').fillna(0)
 
+        comparativo = comparativo[(comparativo['Consumo Anterior'] != 0) & (comparativo['Consumo Atual'] != 0)]
+
         comparativo['Diferença'] = comparativo['Consumo Atual'] - comparativo['Consumo Anterior']
-
-        comparativo = comparativo[~((comparativo['Consumo Atual'] == 0) & (comparativo['Consumo Anterior'] == 0))]
-
         comparativo['Porcentagem Variação'] = comparativo.apply(
             lambda row: (abs(row['Diferença']) / row['Consumo Anterior'] * 100) if row['Consumo Anterior'] != 0 else 0,
             axis=1
         )
+
+        comparativo['Porcentagem Variação'] = comparativo['Porcentagem Variação'].map('{:.2f}%'.format)
 
         comparativo['Tendência'] = comparativo.apply(
             lambda row: '⬇️ Consumo diminuiu' if row['Diferença'] < 0 else (
@@ -111,21 +117,48 @@ if arquivo_mes_anterior and arquivo_mes_atual:
         st.markdown("---")
         st.subheader('📋 Lista de Todos os Setores')
 
-        setores_disponiveis = st.session_state['comparativo']['Setor'].unique().tolist()
+        setores_disponiveis = comparativo['Setor'].unique().tolist()
         setor_clicado = st.multiselect('🔎 Selecione um ou mais setores (inclua "Todos os setores"):', 
                                       options=['Todos os Setores'] + setores_disponiveis,
                                       default=['Todos os Setores'])
 
         if 'Todos os Setores' not in setor_clicado:
-            comparativo = st.session_state['comparativo'][st.session_state['comparativo']['Setor'].isin(setor_clicado)]
-        else:
-            comparativo = st.session_state['comparativo']
+            comparativo = comparativo[comparativo['Setor'].isin(setor_clicado)]
 
-        st.dataframe(comparativo[['Setor', 'Consumo Anterior', 'Consumo Atual', 'Diferença', 'Porcentagem Variação', 'Tendência']])
+        def colorir_tendencia(row):
+            if row['Tendência'] == '⬇️ Consumo diminuiu':
+                return ['background-color: #d4efdf'] * len(row)  # Linha verde claro
+            elif row['Tendência'] == '⬆️ Consumo aumentou':
+                return ['background-color: #f5b7b1'] * len(row)  # Linha vermelho claro
+            else:
+                return [''] * len(row)
+
+        st.dataframe(comparativo[['Setor', 'Consumo Anterior', 'Consumo Atual', 'Diferença', 'Porcentagem Variação', 'Tendência']].style.apply(colorir_tendencia, axis=1))
+
+        # Top 5 Consumo Aumentou
+        top_5_aumento = comparativo[comparativo['Diferença'] > 0].nlargest(5, 'Diferença')
+        st.subheader("🔥 Top 5 Consumo Aumentado")
+        st.dataframe(top_5_aumento[['Setor', 'Consumo Anterior', 'Consumo Atual', 'Diferença', 'Porcentagem Variação']])
+
+        # Top 5 Consumo Diminuiu
+        top_5_diminuiu = comparativo[comparativo['Diferença'] < 0].nsmallest(5, 'Diferença')
+        st.subheader("❄️ Top 5 Consumo Diminuído")
+        st.dataframe(top_5_diminuiu[['Setor', 'Consumo Anterior', 'Consumo Atual', 'Diferença', 'Porcentagem Variação']])
 
         total_aumentou = comparativo[comparativo['Diferença'] > 0]['Diferença'].sum()
         total_diminuiu = comparativo[comparativo['Diferença'] < 0]['Diferença'].sum()
         setores_avaliados = comparativo.shape[0]
+        saldo_total = total_aumentou + total_diminuiu
+
+        if saldo_total > 0:
+            tendencia_geral = "⬆️ Aumento geral no consumo"
+            cor_tendencia = "#e74c3c"
+        elif saldo_total < 0:
+            tendencia_geral = "⬇️ Redução geral no consumo"
+            cor_tendencia = "#2ecc71"
+        else:
+            tendencia_geral = "➖ Sem variação geral"
+            cor_tendencia = "#bdc3c7"
 
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -135,83 +168,32 @@ if arquivo_mes_anterior and arquivo_mes_atual:
         with col3:
             criar_kpi("🏢 Setores Avaliados", setores_avaliados, "#3498db")
 
-        st.markdown("---")
-
-        aumentaram = comparativo[comparativo['Diferença'] > 0].sort_values(by='Diferença', ascending=False).head(5)
-        diminuiram = comparativo[comparativo['Diferença'] < 0].sort_values(by='Diferença', ascending=True).head(5)
-
         st.subheader('📊 Gráfico Geral de Consumo por Setor')
         fig_geral = px.bar(
             comparativo,
             x='Setor',
             y='Diferença',
             color='Tendência',
-            text=comparativo['Porcentagem Variação'].map('{:.2f}%'.format),
+            text='Porcentagem Variação',
             color_discrete_map={
-                '⬇️ Consumo diminuiu': '#2ecc71',
-                '⬆️ Consumo aumentou': '#e74c3c',
+                '⬇️ Consumo diminuiu': '#d4efdf',
+                '⬆️ Consumo aumentou': '#f5b7b1',
                 '➖ Sem variação': '#bdc3c7'
-            },
-            title='Variação Geral de Consumo por Setor'
+            }
         )
-        fig_geral.update_layout(xaxis_title='Setor', yaxis_title='Diferença de Consumo', plot_bgcolor='rgba(0,0,0,0)', title_font_size=20)
-        st.plotly_chart(fig_geral, use_container_width=True)
-
-        tipo_grafico = st.selectbox('📊 Tipo de gráfico para os Top 5:', ('Barras', 'Pizza'))
-
-        st.subheader('📈 Top 5 Setores com Aumento de Consumo')
-        if tipo_grafico == 'Barras':
-            aumentaram['Texto Exibido'] = aumentaram.apply(
-                lambda row: f"{row['Diferença']:.0f} ({row['Porcentagem Variação']:.2f}%)", axis=1
-            )
-            fig_aumento = px.bar(
-                aumentaram,
-                x='Setor',
-                y='Diferença',
-                text='Texto Exibido',
-                color='Tendência',
-                color_discrete_map={'⬆️ Consumo aumentou': '#e74c3c'}
-            )
-            st.plotly_chart(fig_aumento, use_container_width=True)
-        else:
-            fig_aumento_pizza = px.pie(
-                aumentaram,
-                names='Setor',
-                values='Diferença',
-                title="Aumento de Consumo - Top 5",
-                color_discrete_map={'⬆️ Consumo aumentou': '#e74c3c'}
-            )
-            st.plotly_chart(fig_aumento_pizza, use_container_width=True)
-
-        st.subheader('📉 Top 5 Setores com Redução de Consumo')
-        if tipo_grafico == 'Barras':
-            diminuiram['Texto Exibido'] = diminuiram.apply(
-                lambda row: f"{row['Diferença']:.0f} ({row['Porcentagem Variação']:.2f}%)", axis=1
-            )
-            fig_reducao = px.bar(
-                diminuiram,
-                x='Setor',
-                y='Diferença',
-                text='Texto Exibido',
-                color='Tendência',
-                color_discrete_map={'⬇️ Consumo diminuiu': '#2ecc71'}
-            )
-            st.plotly_chart(fig_reducao, use_container_width=True)
-        else:
-            fig_reducao_pizza = px.pie(
-                diminuiram,
-                names='Setor',
-                values='Diferença',
-                title="Redução de Consumo - Top 5",
-                color_discrete_map={'⬇️ Consumo diminuiu': '#2ecc71'}
-            )
-            st.plotly_chart(fig_reducao_pizza, use_container_width=True)
-
-        st.markdown("---")
+        fig_geral.update_layout(showlegend=False)
+        st.plotly_chart(fig_geral)
 
         st.download_button(
-            label="💾 Baixar Comparativo com Gráficos como Excel",
-            data=to_excel(comparativo, fig_geral, fig_aumento, fig_reducao),
-            file_name="comparativo_consumo_impressoras_com_graficos.xlsx",
+            label="💾 Baixar Dados como Excel",
+            data=to_excel(comparativo),
+            file_name="comparativo_consumo.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+        st.download_button(
+            label="💾 Baixar Relatório em PDF",
+            data=gerar_pdf(comparativo),
+            file_name="relatorio_consumo.pdf",
+            mime="application/pdf"
         )
