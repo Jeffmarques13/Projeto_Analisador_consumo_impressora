@@ -193,7 +193,7 @@ if arquivo_mes_anterior and arquivo_mes_atual:
 
         st.download_button(
             label="💾 Baixar Relatório em PDF",
-            data=gerar_pdf(comparativo)
+            data=gerar_pdf(comparativo),
             file_name="relatorio_consumo.pdf",
             mime="application/pdf"
         )
